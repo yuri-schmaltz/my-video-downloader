@@ -20,10 +20,10 @@ import sys
 
 from gi.repository import Adw, Gio, GLib
 
+from video_downloader.ui.window import Window
 from video_downloader.util import gobject_log
 from video_downloader.util.connection import (
     CloseStack, SignalConnection, create_action)
-from video_downloader.window import Window
 
 N_ = gettext.gettext
 
@@ -91,6 +91,27 @@ class Application(Adw.Application):
         return -1
 
 
-def main(version):
-    app = gobject_log(Application())
-    return app.run(sys.argv)
+def build_application():
+    """Instantiate the GTK application with logging enabled."""
+
+    return gobject_log(Application())
+
+
+def run(argv=None):
+    """Run the GTK application.
+
+    Parameters
+    ----------
+    argv:
+        Optional list of command-line arguments. When ``None`` the
+        :mod:`sys` arguments are used.
+    """
+
+    app = build_application()
+    return app.run(argv or sys.argv)
+
+
+def main(version, argv=None):
+    """Backward compatible entry point used by legacy scripts."""
+
+    return run(argv)
