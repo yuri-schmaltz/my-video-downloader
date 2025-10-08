@@ -23,11 +23,13 @@ import uuid
 
 from gi.repository import Adw, GdkPixbuf, Gio, GLib, Gtk
 
-from video_downloader.about_dialog import build_about_dialog
-from video_downloader.authentication_dialog import LoginDialog, PasswordDialog
-from video_downloader.model import HandlerInterface, Model, check_download_dir
-from video_downloader.playlist_dialog import PlaylistDialog
-from video_downloader.shortcuts_dialog import ShortcutsDialog
+from video_downloader.app.model import HandlerInterface, Model, check_download_dir
+from video_downloader.ui import (
+    ShortcutsDialog,
+    build_about_dialog,
+)
+from video_downloader.ui.authentication import LoginDialog, PasswordDialog
+from video_downloader.ui.playlist import PlaylistDialog
 from video_downloader.util import gobject_log
 from video_downloader.util.connection import (CloseStack, PropertyBinding,
                                               RateLimit, SignalConnection,
