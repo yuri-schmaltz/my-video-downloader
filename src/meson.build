@@ -23,6 +23,7 @@ video_downloader_ui_sources = [
     'authentication_dialog_login.ui',
     'authentication_dialog_password.ui',
     'shortcuts_dialog.ui',
+    'download_page.ui',
     'window.ui',
   ]),
   about_dialog_ui_source,
