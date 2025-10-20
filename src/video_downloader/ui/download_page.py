@@ -1,0 +1,603 @@
+"""Reusable download page that encapsulates a single download session."""
+
+from __future__ import annotations
+
+import gettext
+import locale
+import math
+import os
+import uuid
+from typing import Optional
+
+from gi.repository import Adw, GdkPixbuf, Gio, GLib, Gtk
+
+from video_downloader.app.model import HandlerInterface, Model, check_download_dir
+from video_downloader.ui.authentication import LoginDialog, PasswordDialog
+from video_downloader.ui.playlist import PlaylistDialog
+from video_downloader.util import gobject_log
+from video_downloader.util.connection import (
+    CloseStack,
+    PropertyBinding,
+    RateLimit,
+    SignalConnection,
+    create_action,
+)
+from video_downloader.util.path import expand_path, open_in_file_manager
+from video_downloader.util.response import AsyncResponse
+
+DOWNLOAD_IMAGE_SIZE = 128
+MAX_ASPECT_RATIO = 2.39
+N_ = gettext.gettext
+
+
+@Gtk.Template(resource_path="/com/github/unrud/VideoDownloader/download_page.ui")
+class DownloadPage(Gtk.Box, HandlerInterface):
+    """Single download workflow embedded inside a tab."""
+
+    __gtype_name__ = "VideoDownloaderDownloadPage"
+
+    error_detail_wdg = Gtk.Template.Child()
+    success_detail_wdg = Gtk.Template.Child()
+    audio_url_wdg = Gtk.Template.Child()
+    video_url_wdg = Gtk.Template.Child()
+    resolution_wdg = Gtk.Template.Child()
+    prefer_mpeg_wdg = Gtk.Template.Child()
+    main_stack_wdg = Gtk.Template.Child()
+    audio_video_stack_wdg = Gtk.Template.Child()
+    audio_download_wdg = Gtk.Template.Child()
+    video_download_wdg = Gtk.Template.Child()
+    error_back_wdg = Gtk.Template.Child()
+    success_back_wdg = Gtk.Template.Child()
+    download_cancel_wdg = Gtk.Template.Child()
+    finished_download_dir_wdg = Gtk.Template.Child()
+    finished_download_titles_wdg = Gtk.Template.Child()
+    download_page_title_wdg = Gtk.Template.Child()
+    download_title_wdg = Gtk.Template.Child()
+    download_progress_wdg = Gtk.Template.Child()
+    download_info_wdg = Gtk.Template.Child()
+    download_images_wdg = Gtk.Template.Child()
+
+    def __init__(self, application, window, window_group):
+        super().__init__()
+        self._application = application
+        self._window = window
+        self._window_group = window_group
+        self._cs = CloseStack()
+        self.model = gobject_log(Model(self))
+        self._cs.add_close_callback(self.model.destroy)
+        self._notification_uuid = str(uuid.uuid4())
+        self._tab_page: Optional[Adw.TabPage] = None
+
+        # expose model actions under the "session" prefix
+        self.insert_action_group("session", self.model.actions)
+        self._cs.add_close_callback(self.insert_action_group, "session", None)
+
+        # setup extra page actions
+        self._page_actions = Gio.SimpleActionGroup.new()
+        self.insert_action_group("page", self._page_actions)
+        self._cs.add_close_callback(self.insert_action_group, "page", None)
+        create_action(
+            self._page_actions,
+            self._cs,
+            "set-audio-video-page",
+            lambda _, param: self.audio_video_stack_wdg.set_visible_child_name(
+                param.get_string()
+            ),
+            parameter_type=GLib.VariantType("s"),
+        )
+
+        # register notification actions on the application
+        create_action(
+            application,
+            self._cs,
+            "notification-success--" + self._notification_uuid,
+            window.present,
+            no_args=True,
+        )
+        create_action(
+            application,
+            self._cs,
+            "notification-error--" + self._notification_uuid,
+            window.present,
+            no_args=True,
+        )
+        create_action(
+            application,
+            self._cs,
+            "notification-open-finished-download-dir--" + self._notification_uuid,
+            self.model.actions.activate_action,
+            "open-finished-download-dir",
+            no_args=True,
+        )
+
+        # bind properties to UI
+        self._cs.push(
+            PropertyBinding(self.model, "error", self.error_detail_wdg, "label")
+        )
+        self._cs.push(
+            PropertyBinding(self.model, "url", self.audio_url_wdg, "text", bi=True)
+        )
+        self._cs.push(
+            PropertyBinding(self.model, "url", self.video_url_wdg, "text", bi=True)
+        )
+        for description in self.model.resolutions.values():
+            self.resolution_wdg.get_model().append(description)
+        self._cs.push(
+            PropertyBinding(
+                self.model,
+                "resolution",
+                self.resolution_wdg,
+                "selected",
+                lambda r: list(self.model.resolutions).index(r),
+                lambda i: list(self.model.resolutions)[i],
+                bi=True,
+            )
+        )
+        self._cs.push(
+            PropertyBinding(
+                self.model, "prefer-mpeg", self.prefer_mpeg_wdg, "active", bi=True
+            )
+        )
+        self._cs.push(
+            PropertyBinding(
+                self.model,
+                "state",
+                self.main_stack_wdg,
+                "visible-child-name",
+                func_a_to_b=lambda s: {"prepare": "download", "cancel": "download"}.get(
+                    s, s
+                ),
+            )
+        )
+        self._cs.push(
+            PropertyBinding(
+                self.model,
+                "state",
+                func_a_to_b=lambda _: self._update_notification(self.model.state),
+            )
+        )
+        self._cs.push(
+            PropertyBinding(
+                self.model, "mode", self.audio_video_stack_wdg, "visible-child-name", bi=True
+            )
+        )
+        self._cs.push(
+            PropertyBinding(
+                self.main_stack_wdg,
+                "visible-child-name",
+                func_a_to_b=lambda _: self._update_focus_and_default(),
+            )
+        )
+        self._cs.push(
+            PropertyBinding(
+                self.audio_video_stack_wdg,
+                "visible-child-name",
+                func_a_to_b=lambda _: self._update_focus_and_default(),
+            )
+        )
+        self._cs.push(
+            PropertyBinding(
+                self.model,
+                "finished-download-dir",
+                func_a_to_b=self._update_finished_download_dir_wdg_tooltip,
+            )
+        )
+        update_download_msg_rate_limited = self._cs.push(
+            RateLimit(self._update_download_msg, 1)
+        )
+        for name in [
+            "download-bytes",
+            "download-bytes-total",
+            "download-speed",
+            "download-eta",
+        ]:
+            self._cs.push(
+                SignalConnection(
+                    self.model,
+                    "notify::" + name,
+                    update_download_msg_rate_limited,
+                    no_args=True,
+                )
+            )
+        self._cs.push(
+            PropertyBinding(
+                self.model,
+                "download-progress",
+                func_a_to_b=lambda _: self._update_download_progress(),
+            )
+        )
+        self._cs.push(
+            SignalConnection(
+                self.model,
+                "download-pulse",
+                self._update_download_progress,
+                no_args=True,
+            )
+        )
+        for name in ["download-playlist-count", "download-playlist-index"]:
+            self._cs.push(
+                PropertyBinding(
+                    self.model,
+                    name,
+                    func_a_to_b=lambda _: self._update_download_page_title(),
+                )
+            )
+        self._cs.push(
+            PropertyBinding(
+                self.model,
+                "download-title",
+                self.download_title_wdg,
+                "label",
+                func_a_to_b=lambda title: title or "…",
+            )
+        )
+        self._cs.push(
+            PropertyBinding(
+                self.model,
+                "download-thumbnail",
+                func_a_to_b=self._add_thumbnail,
+            )
+        )
+        self._cs.push(
+            PropertyBinding(
+                self.download_images_wdg,
+                "transition-running",
+                func_a_to_b=lambda b: b or self._clean_thumbnails(),
+            )
+        )
+        self._cs.push(
+            PropertyBinding(
+                self.model,
+                "download-titles",
+                self.finished_download_titles_wdg,
+                "label",
+                func_a_to_b=lambda titles: " | ".join(titles or []),
+            )
+        )
+        self._cs.push(
+            PropertyBinding(
+                self.model,
+                "finished-download-filenames",
+                self.success_detail_wdg,
+                "label",
+                func_a_to_b=lambda filenames: "\n".join(
+                    (
+                        f'<span baseline_shift="{-22 * 1024}">'
+                        f'<a href="{s}">{s}</a>'
+                        f"</span>"
+                    )
+                    for s in map(GLib.markup_escape_text, filenames or [])
+                ),
+            )
+        )
+        self._cs.push(
+            SignalConnection(
+                self.success_detail_wdg,
+                "activate_link",
+                lambda sender, filename: open_in_file_manager(
+                    self.model.finished_download_dir, [filename]
+                ),
+            )
+        )
+        self._cs.push(
+            SignalConnection(
+                self,
+                "show",
+                self._update_focus_and_default,
+                no_args=True,
+            )
+        )
+        self._cs.push(
+            SignalConnection(
+                self.model, "notify::url", self._update_tab_title, no_args=True
+            )
+        )
+        self._cs.push(
+            SignalConnection(
+                self.model,
+                "notify::download-title",
+                self._update_tab_title,
+                no_args=True,
+            )
+        )
+        self._cs.push(
+            PropertyBinding(
+                self.model,
+                "state",
+                func_a_to_b=self._update_tab_icon,
+            )
+        )
+
+    # Public API -----------------------------------------------------------------
+
+    def bind_tab_page(self, tab_page):
+        """Attach the tab metadata to allow title/icon updates."""
+        self._tab_page = tab_page
+        self._update_tab_title()
+        self._update_tab_icon()
+
+    def on_selected(self):
+        self._update_focus_and_default()
+
+    def change_download_folder(self):
+        return self._change_download_folder()
+
+    # Internal helpers -----------------------------------------------------------
+
+    def _update_download_progress(self):
+        progress = self.model.download_progress
+        if progress < 0:
+            self.download_progress_wdg.pulse()
+        else:
+            self.download_progress_wdg.set_fraction(progress)
+
+    def _update_download_page_title(self):
+        playlist_count = self.model.download_playlist_count
+        playlist_index = self.model.download_playlist_index
+        s = N_("Downloading")
+        if playlist_count > 1:
+            s += " (" + N_("{} of {}").format(playlist_index + 1, playlist_count) + ")"
+        self.download_page_title_wdg.set_text(s)
+
+    def _update_download_msg(self):
+        def filesize_fmt(num, suffix="B"):
+            for unit in ["", "k", "M", "G", "T", "P", "E", "Z", "Y"]:
+                if abs(num) < 1000:
+                    break
+                num /= 1000
+            return locale.format_string("%.1f\u00A0%s%s", (num, unit, suffix))
+
+        bytes_ = self.model.download_bytes
+        bytes_total = self.model.download_bytes_total
+        speed = self.model.download_speed
+        eta = self.model.download_eta
+        eta_h = eta // 60 // 60
+        eta_m = eta // 60 % 60
+        eta_s = eta % 60
+        time_msg = "%d∶%02d∶%02d" % (eta_h, eta_m, eta_s) if eta >= 0 else ""
+        size_msg = (
+            N_("{} of {}").format(
+                filesize_fmt(bytes_) if bytes_ >= 0 else N_("unknown"),
+                filesize_fmt(bytes_total) if bytes_total >= 0 else N_("unknown"),
+            )
+            if bytes_ >= 0 or bytes_total >= 0
+            else ""
+        )
+        speed_msg = filesize_fmt(speed, "B/\u2060s") if speed >= 0 else ""
+        self.download_info_wdg.set_text(
+            time_msg
+            + ("\u00A0- " if time_msg and (size_msg or speed_msg) else "")
+            + size_msg
+            + (f" ({speed_msg})" if size_msg and speed_msg else speed_msg)
+        )
+
+    def _add_thumbnail(self, thumbnail):
+        try:
+            pixbuf = gobject_log(
+                GdkPixbuf.Pixbuf.new_from_file_at_size(
+                    thumbnail,
+                    math.ceil(DOWNLOAD_IMAGE_SIZE * MAX_ASPECT_RATIO),
+                    DOWNLOAD_IMAGE_SIZE,
+                )
+            )
+        except GLib.Error:
+            img_wdg = gobject_log(Gtk.Image.new_from_icon_name("video-x-generic"))
+            img_wdg.set_pixel_size(DOWNLOAD_IMAGE_SIZE)
+        else:
+            img_wdg = gobject_log(Gtk.Picture.new_for_pixbuf(pixbuf))
+        img_wdg.set_size_request(-1, DOWNLOAD_IMAGE_SIZE)
+        self.download_images_wdg.add_child(img_wdg)
+        self.download_images_wdg.set_visible_child(img_wdg)
+
+    def _clean_thumbnails(self):
+        visible_child_wdg = self.download_images_wdg.get_visible_child()
+        for page in list(self.download_images_wdg.get_pages()):
+            child_wdg = page.get_child()
+            if child_wdg is not visible_child_wdg:
+                self.download_images_wdg.remove(child_wdg)
+
+    def _update_finished_download_dir_wdg_tooltip(self, download_dir):
+        if download_dir:
+            home_dir = os.path.expanduser("~")
+            if os.path.commonpath([home_dir, download_dir]) == home_dir:
+                download_dir = "~" + download_dir[len(home_dir) :]
+        self.finished_download_dir_wdg.set_tooltip_text(download_dir)
+
+    def _update_focus_and_default(self):
+        state = self.main_stack_wdg.get_visible_child_name()
+        mode = self.audio_video_stack_wdg.get_visible_child_name()
+        default_wdg = None
+        if state == "start":
+            if mode == "audio":
+                default_wdg = self.audio_download_wdg
+                self.audio_url_wdg.grab_focus()
+            elif mode == "video":
+                default_wdg = self.video_download_wdg
+                self.video_url_wdg.grab_focus()
+        elif state in ["download", "cancel"]:
+            self.download_cancel_wdg.grab_focus()
+        elif state == "error":
+            self.error_back_wdg.grab_focus()
+        elif state == "success":
+            self.finished_download_dir_wdg.grab_focus()
+        if default_wdg is not None:
+            self._window.set_default_widget(default_wdg)
+        else:
+            self._window.set_default_widget(None)
+
+    def _hide_notification(self):
+        self._application.withdraw_notification(self._notification_uuid)
+
+    def _update_notification(self, state):
+        self._hide_notification()
+        if state not in ("error", "success") or self._window.is_active():
+            return
+        notification = gobject_log(Gio.Notification())
+        if state == "error":
+            notification.set_title(N_("Download failed"))
+            notification.set_default_action(
+                "app.notification-error--" + self._notification_uuid
+            )
+        elif state == "success":
+            notification.set_title(N_("Download finished"))
+            if self.model.download_titles:
+                notification.set_body(" | ".join(self.model.download_titles))
+            notification.set_default_action(
+                "app.notification-success--" + self._notification_uuid
+            )
+            notification.add_button(
+                N_("Open Download Location"),
+                "app.notification-open-finished-download-dir--" + self._notification_uuid,
+            )
+        self._application.send_notification(self._notification_uuid, notification)
+
+    def _update_tab_title(self, *_):
+        if not self._tab_page:
+            return
+        title = self.model.download_title or self.model.url or N_("Download")
+        self._tab_page.set_title(title)
+
+    def _update_tab_icon(self, *_):
+        if not self._tab_page:
+            return
+        state = self.model.state
+        icon_name = "download-symbolic"
+        if state == "success":
+            icon_name = "emblem-ok-symbolic"
+        elif state == "error":
+            icon_name = "dialog-warning-symbolic"
+        self._tab_page.set_icon_name(icon_name)
+
+    # HandlerInterface -----------------------------------------------------------
+
+    def on_download_folder_error(self, title, message, path, show_reset_button=True):
+        def handle_response(dialog, res):
+            if res == RESPONSE_TYPE_CHANGE:
+                self._change_download_folder().chain(async_response)
+                connection.close()
+            elif res == RESPONSE_TYPE_RESET:
+                self._application.settings.reset("download-folder")
+                async_response.set_result(None)
+            else:
+                async_response.cancel()
+
+        RESPONSE_TYPE_RESET = 100
+        RESPONSE_TYPE_CHANGE = 101
+        if path is not None:
+            message = f"{message}: {path!r}" if message else repr(path)
+        dialog = Gtk.MessageDialog(
+            transient_for=self._window,
+            modal=True,
+            destroy_with_parent=True,
+            message_type=Gtk.MessageType.ERROR,
+            text=title,
+            secondary_text=message,
+            buttons=Gtk.ButtonsType.CANCEL,
+        )
+        if show_reset_button:
+            dialog.add_button(N_("Reset to Default"), RESPONSE_TYPE_RESET)
+        dialog.add_button(N_("Change Download Location"), RESPONSE_TYPE_CHANGE)
+        dialog.set_default_response(RESPONSE_TYPE_CHANGE)
+        connection = SignalConnection(dialog, "response", handle_response)
+        connection.add_close_callback(dialog.destroy)
+        async_response = AsyncResponse()
+        async_response.add_close_callback(connection.close)
+        self._cs.push(async_response)
+        dialog.show()
+        return async_response
+
+    def _change_download_folder(self):
+        def handle_callback(dialog, task):
+            try:
+                file = dialog.select_folder_finish(task)
+            except GLib.GError:
+                async_response.cancel()
+                return
+            message = path = None
+            if file and file.get_path():
+                path = file.get_path()
+                message = check_download_dir(expand_path(path))
+                if message is None:
+                    self.model.download_folder = path
+                    async_response.set_result(None)
+                    return
+            else:
+                message = N_("Not a directory")
+            self.on_download_folder_error(
+                N_("Invalid folder selected"),
+                message,
+                path,
+                show_reset_button=False,
+            ).chain(async_response)
+
+        dialog = gobject_log(
+            Gtk.FileDialog(
+                modal=True,
+                title=N_("Change Download Location"),
+                accept_label=N_("Select Folder"),
+            )
+        )
+        cancellable = Gio.Cancellable()
+        async_response = AsyncResponse()
+        async_response.add_close_callback(cancellable.cancel)
+        self._cs.push(async_response)
+        dialog.select_folder(self._window, cancellable, handle_callback)
+        return async_response
+
+    def on_playlist_request(self):
+        def handle_response(dialog, res):
+            if res == Gtk.ResponseType.NO:
+                async_response.set_result(False)
+            elif res == Gtk.ResponseType.YES:
+                async_response.set_result(True)
+            else:
+                async_response.cancel()
+
+        dialog = gobject_log(PlaylistDialog(self._window))
+        connection = SignalConnection(dialog, "response", handle_response)
+        connection.add_close_callback(dialog.destroy)
+        async_response = AsyncResponse()
+        async_response.add_close_callback(connection.close)
+        self._cs.push(async_response)
+        self._window_group.add_window(dialog)
+        dialog.show()
+        return async_response
+
+    def on_login_request(self):
+        def handle_response(dialog, res):
+            if res == Gtk.ResponseType.OK:
+                async_response.set_result((dialog.username, dialog.password))
+            else:
+                async_response.cancel()
+
+        dialog = gobject_log(LoginDialog(self._window))
+        connection = SignalConnection(dialog, "response", handle_response)
+        connection.add_close_callback(dialog.destroy)
+        async_response = AsyncResponse()
+        async_response.add_close_callback(connection.close)
+        self._cs.push(async_response)
+        self._window_group.add_window(dialog)
+        dialog.show()
+        return async_response
+
+    def on_password_request(self):
+        def handle_response(dialog, res):
+            if res == Gtk.ResponseType.OK:
+                async_response.set_result(dialog.password)
+            else:
+                async_response.cancel()
+
+        dialog = gobject_log(PasswordDialog(self._window))
+        connection = SignalConnection(dialog, "response", handle_response)
+        connection.add_close_callback(dialog.destroy)
+        async_response = AsyncResponse()
+        async_response.add_close_callback(connection.close)
+        self._cs.push(async_response)
+        self._window_group.add_window(dialog)
+        dialog.show()
+        return async_response
+
+    def destroy(self):
+        self._hide_notification()
+        self._cs.close()
+        super().destroy()

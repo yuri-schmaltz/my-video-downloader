@@ -24,6 +24,7 @@ ui_sources = files([
   'ui/__init__.py',
   'ui/about.py',
   'ui/authentication.py',
+  'ui/download_page.py',
   'ui/playlist.py',
   'ui/shortcuts.py',
   'ui/window.py',
