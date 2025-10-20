@@ -90,6 +90,7 @@ class Window(Adw.ApplicationWindow):
         page.destroy()
         if self.tab_view_wdg.get_n_pages() == 0:
             GLib.idle_add(self._create_session)
+        return True
 
     def _show_shortcuts_dialog(self):
         dialog = gobject_log(ShortcutsDialog(self))
