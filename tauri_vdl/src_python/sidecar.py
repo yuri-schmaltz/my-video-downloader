@@ -3,12 +3,17 @@ import json
 import os
 import traceback
 
-# Mock gi to avoid Gtk/GLib dependencies in the sidecar
-class Mock:
-    def __init__(self, *args, **kwargs): pass
-    def __getattr__(self, name): return Mock()
-sys.modules['gi'] = Mock()
-sys.modules['gi.repository'] = Mock()
+# Mock gi only if not available (e.g. on Windows or headless without libs)
+try:
+    import gi
+except ImportError:
+    class Mock:
+        def __init__(self, *args, **kwargs): pass
+        def __getattr__(self, name): return Mock()
+        def __call__(self, *args, **kwargs): return Mock()
+        def __iter__(self): return iter([])
+    sys.modules['gi'] = Mock()
+    sys.modules['gi.repository'] = Mock()
 
 # Add the original src directory to path to reuse yt_dlp_slave and other utilities
 original_src = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src"))
@@ -55,7 +60,10 @@ class TauriHandler:
     def on_download_lock(self, name): return True
     def on_download_thumbnail(self, path): self.emit("thumbnail", {"path": path})
     def on_finished(self, success): self.emit("finished", {"success": success})
-    def on_error(self, msg): self.emit("error", {"message": msg})
+    def on_error(self, msg):
+        from video_downloader.util.logging import StructuredLogger
+        msg = StructuredLogger._mask_sensitive(msg)
+        self.emit("error", {"message": msg})
 
 def main():
     handler = TauriHandler()

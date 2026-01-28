@@ -17,7 +17,7 @@
             "binary": "python-sidecar",
             "cmd": "python3",
             "args": [
-              "src-python/sidecar.py"
+              "src_python/sidecar.py"
             ]
           }
         ]
