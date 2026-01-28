@@ -1,0 +1,5 @@
+#!/bin/bash
+# Shim to run python sidecar from Tauri
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+PYTHON_SCRIPT="$DIR/../src-python/sidecar.py"
+python3 "$PYTHON_SCRIPT" "$@"
