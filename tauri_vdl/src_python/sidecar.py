@@ -91,7 +91,7 @@ def main():
                 print(json.dumps({"pong": True}), flush=True)
                 
         except Exception:
-            print(json.dumps({"error": traceback.format_all()}), flush=True)
+            print(json.dumps({"error": traceback.format_exc()}), flush=True)
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,11 @@
+# Video Downloader - Python Dependencies
+# For the Tauri sidecar (tauri_vdl/src_python/sidecar.py)
+
+# Core download engine
+yt-dlp>=2024.1.0
+
+# Testing
+pytest>=7.0.0
+
+# Optional: GTK dependencies (for legacy GTK app, not needed for Tauri)
+# PyGObject>=3.42.0

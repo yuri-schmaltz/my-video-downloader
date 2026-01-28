@@ -8,20 +8,15 @@
   "permissions": [
     "core:default",
     "opener:default",
-    "shell:default",
+    "shell:allow-spawn",
+    "shell:allow-stdin-write",
     {
       "identifier": "shell:allow-execute",
-      "preference": {
-        "args": [
-          {
-            "binary": "python-sidecar",
-            "cmd": "python3",
-            "args": [
-              "src_python/sidecar.py"
-            ]
-          }
-        ]
-      }
+      "allow": [
+        {
+          "name": "python-sidecar"
+        }
+      ]
     }
   ]
 }
