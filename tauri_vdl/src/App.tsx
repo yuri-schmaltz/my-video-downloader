@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "framer-motion";
-import { Download, Link as LinkIcon, AlertCircle, CheckCircle2, Loader2, Gauge, HardDrive } from "lucide-react";
+import { Download, Link as LinkIcon, AlertCircle, CheckCircle2, Loader2, Gauge, HardDrive, Video, Music, Settings2 } from "lucide-react";
 import "./App.css";
 
 interface ProgressData {
@@ -19,21 +19,37 @@ function App() {
   const [status, setStatus] = useState<"idle" | "downloading" | "finished" | "error">("idle");
   const [progress, setProgress] = useState<ProgressData | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
+  const [mode, setMode] = useState<"video" | "audio">("video");
+  const [resolution, setResolution] = useState(1080);
   const unlistenRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
+    console.log("[REACT] ⚡ App mounted, setting up sidecar event listener...");
     const setupListener = async () => {
       unlistenRef.current = await listen<any>("sidecar-event", (event) => {
         const msg = event.payload;
+        console.log("[REACT] 📩 Sidecar event received:", JSON.stringify(msg, null, 2));
         if (msg.event === "progress") {
+          console.log(`[REACT] 📊 Progress: ${(msg.data.progress * 100).toFixed(1)}% | Speed: ${msg.data.speed} B/s`);
           setProgress(msg.data);
         } else if (msg.event === "finished") {
+          console.log(`[REACT] ✅ Finished! Success: ${msg.data.success}`);
           setStatus(msg.data.success ? "finished" : "error");
         } else if (msg.event === "error") {
+          console.error("[REACT] ❌ Error from sidecar:", msg.data.message);
           setErrorMessage(msg.data.message);
           setStatus("error");
+        } else if (msg.event === "download_start") {
+          console.log(`[REACT] 🎬 Download started: ${msg.data.title} (${msg.data.index}/${msg.data.count})`);
+        } else if (msg.event === "download_finished") {
+          console.log(`[REACT] 📁 File saved: ${msg.data.filename}`);
+        } else if (msg.event === "pulse") {
+          console.log("[REACT] 💓 Pulse received (alive signal)");
+        } else {
+          console.log("[REACT] ❓ Unknown event type:", msg.event);
         }
       });
+      console.log("[REACT] ✅ Sidecar listener registered successfully");
     };
     setupListener();
 
@@ -43,17 +59,28 @@ function App() {
   }, []);
 
   const startDownload = async () => {
-    if (!url) return;
+    if (!url) {
+      console.warn("[REACT] ⚠️ startDownload called but URL is empty");
+      return;
+    }
 
+    console.log("[REACT] 🚀 Starting download...");
+    console.log("[REACT] 🔗 URL:", url);
+    console.log("[REACT] 📦 Mode:", mode, "| Resolution:", resolution);
     setStatus("downloading");
+    console.log("[REACT] 📍 Status changed: idle → downloading");
     setErrorMessage("");
     setProgress(null);
 
     try {
-      await invoke("start_download", { url });
+      console.log("[REACT] 📡 Invoking Rust 'start_download' command...");
+      await invoke("start_download", { url, mode, resolution });
+      console.log("[REACT] ✅ Rust command invoked successfully (sidecar spawned)");
     } catch (e: any) {
+      console.error("[REACT] ❌ Failed to invoke Rust command:", e);
       setErrorMessage(e.toString() || "Failed to start download");
       setStatus("error");
+      console.log("[REACT] 📍 Status changed: downloading → error");
     }
   };
 
@@ -69,6 +96,7 @@ function App() {
   };
 
   const resetState = () => {
+    console.log("[REACT] 🔄 Resetting state to idle");
     setStatus("idle");
     setProgress(null);
     setErrorMessage("");
@@ -115,6 +143,57 @@ function App() {
             {status === "downloading" ? "Downloading..." :
               status === "error" || status === "finished" ? "Try Again" : "Start Download"}
           </button>
+        </div>
+
+        {/* Format Options */}
+        <div className="options-section">
+          <div className="options-header">
+            <Settings2 size={16} />
+            <span>Format Options</span>
+          </div>
+
+          <div className="options-grid">
+            <div className="option-group">
+              <label className="option-label">Type</label>
+              <div className="toggle-group">
+                <button
+                  className={`toggle-btn ${mode === "video" ? "active" : ""}`}
+                  onClick={() => setMode("video")}
+                  disabled={status === "downloading"}
+                >
+                  <Video size={16} />
+                  Video
+                </button>
+                <button
+                  className={`toggle-btn ${mode === "audio" ? "active" : ""}`}
+                  onClick={() => setMode("audio")}
+                  disabled={status === "downloading"}
+                >
+                  <Music size={16} />
+                  Audio
+                </button>
+              </div>
+            </div>
+
+            {mode === "video" && (
+              <div className="option-group">
+                <label className="option-label">Resolution</label>
+                <select
+                  className="select-box"
+                  value={resolution}
+                  onChange={(e) => setResolution(Number(e.target.value))}
+                  disabled={status === "downloading"}
+                >
+                  <option value={2160}>4K (2160p)</option>
+                  <option value={1440}>1440p</option>
+                  <option value={1080}>1080p (Full HD)</option>
+                  <option value={720}>720p (HD)</option>
+                  <option value={480}>480p</option>
+                  <option value={360}>360p</option>
+                </select>
+              </div>
+            )}
+          </div>
         </div>
 
         <AnimatePresence>
