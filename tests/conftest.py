@@ -1,9 +1,13 @@
 import os
 import sys
+import gi
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+
 from gi.repository import Gio
 
 def pytest_sessionstart(session):
-    # Add src to sys.path if not already there
+    # Add src to sys.path for test discovery if not already there
     src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
     if src_dir not in sys.path:
         sys.path.insert(0, src_dir)

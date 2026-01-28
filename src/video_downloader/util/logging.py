@@ -59,7 +59,8 @@ class StructuredLogger:
     def _mask_sensitive(text):
         import re
         # Mask things that look like authorization headers or common tokens
-        text = re.sub(r'([Pp]assword|[Tt]oken|[Ss]ecret)[:=]\s*[^\s,]+', r'\1: ***', text)
+        # Handles "password: value", "password=value", "password value", "password is value"
+        text = re.sub(r'(?i)(password|token|secret)(?::|=| is| )?\s*[^\s,]+', r'\1: ***', text)
         return text
 
 def setup_excepthook():
