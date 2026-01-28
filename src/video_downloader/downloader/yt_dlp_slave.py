@@ -265,13 +265,27 @@ class YoutubeDLSlave:
             break
         return os.path.abspath(filepath)
 
+    def _mask(self, msg):
+        if not isinstance(msg, str):
+            return msg
+        secrets = []
+        for key in ['username', 'password', 'videopassword', 'apikey', 'access_token']:
+            val = self.ydl_opts.get(key)
+            if val and isinstance(val, str) and len(val) > 3:
+                secrets.append(val)
+        
+        for secret in secrets:
+            msg = msg.replace(secret, '***')
+        return msg
+
     def debug(self, msg):
-        print(msg, file=sys.stderr, flush=True)
+        print(self._mask(msg), file=sys.stderr, flush=True)
 
     def warning(self, msg):
-        print(msg, file=sys.stderr, flush=True)
+        print(self._mask(msg), file=sys.stderr, flush=True)
 
     def error(self, msg):
+        msg = self._mask(msg)
         print(msg, file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
         sys.stderr.flush()

@@ -4,7 +4,8 @@ import gettext
 
 from gi.repository import Adw, GLib, Gtk
 
-from video_downloader.ui import ShortcutsDialog, build_about_dialog
+from video_downloader.ui.about import build_about_dialog
+from video_downloader.ui.shortcuts import ShortcutsDialog
 from video_downloader.ui.download_page import DownloadPage
 from video_downloader.util import gobject_log
 from video_downloader.util.connection import CloseStack, SignalConnection, create_action

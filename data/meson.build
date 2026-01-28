@@ -62,26 +62,28 @@ install_data(icon_id + '-symbolic.svg',
   install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'symbolic' / 'apps',
 )
 
-rsvg_util = find_program('rsvg-convert')
-foreach res : [16, 32, 48, 64, 128, 256, 512]
-  icon_install_dir = (
-    get_option('datadir') / 'icons' / 'hicolor' / '@0@x@0@'.format(res) / 'apps'
-  )
-  icon_png = '@0@_@1@.png'.format(icon_id, res)
-  custom_target(icon_png,
-    input: icon_svg,
-    output: icon_png,
-    command: [
-      rsvg_util,
-      '--height', '@0@'.format(res), '--keep-aspect-ratio',
-      '--format', 'png', '--output', '@OUTPUT@', '@INPUT@',
-    ],
-    install: true,
-    install_dir: icon_install_dir,
-  )
-  # rename icon after installation
-  meson.add_install_script(python, move_aux,
-    icon_install_dir / icon_png,
-    icon_install_dir / icon_id + '.png',
-  )
-endforeach
+rsvg_util = find_program('rsvg-convert', required: false)
+if rsvg_util.found()
+  foreach res : [16, 32, 48, 64, 128, 256, 512]
+    icon_install_dir = (
+      get_option('datadir') / 'icons' / 'hicolor' / '@0@x@0@'.format(res) / 'apps'
+    )
+    icon_png = '@0@_@1@.png'.format(icon_id, res)
+    custom_target(icon_png,
+      input: icon_svg,
+      output: icon_png,
+      command: [
+        rsvg_util,
+        '--height', '@0@'.format(res), '--keep-aspect-ratio',
+        '--format', 'png', '--output', '@OUTPUT@', '@INPUT@',
+      ],
+      install: true,
+      install_dir: icon_install_dir,
+    )
+    # rename icon after installation
+    meson.add_install_script(python, move_aux,
+      icon_install_dir / icon_png,
+      icon_install_dir / icon_id + '.png',
+    )
+  endforeach
+endif

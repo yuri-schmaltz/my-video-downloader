@@ -20,10 +20,11 @@ import sys
 
 from gi.repository import Adw, Gio, GLib
 
-from video_downloader.ui.window import Window
+# from video_downloader.ui.window import Window  # Moved to late import to avoid circularity
 from video_downloader.util import gobject_log
 from video_downloader.util.connection import (
     CloseStack, SignalConnection, create_action)
+from video_downloader.util.logging import StructuredLogger, setup_excepthook
 
 N_ = gettext.gettext
 
@@ -39,9 +40,13 @@ class Application(Adw.Application):
         GLib.set_application_name(N_('Video Downloader'))
 
     def do_startup(self):
+        setup_excepthook()
+        log_file = StructuredLogger.setup_file_logging()
+        StructuredLogger.info("Application starting", log_file=log_file)
+        
         Adw.Application.do_startup(self)
         self._cs.push(SignalConnection(
-            self, 'shutdown', self._cs.close, no_args=True))
+            self, 'shutdown', self._on_shutdown, no_args=True))
         self.settings = gobject_log(
             Gio.Settings.new(self.props.application_id))
         # Setup actions
@@ -52,11 +57,17 @@ class Application(Adw.Application):
         self._cs.push(SignalConnection(
             self, 'window-removed', lambda _, win: win.destroy()))
 
+    def _on_shutdown(self):
+        StructuredLogger.info("Application shutting down")
+        self._cs.close()
+
     def _quit(self):
         for win in self.get_windows():
             win.close()
 
     def _new_window(self, url=''):
+        from video_downloader.ui.window import Window
+        StructuredLogger.info("Creating new window")
         win = gobject_log(Window(self))
         win.set_default_icon_name(self.props.application_id)
         model = win.model
